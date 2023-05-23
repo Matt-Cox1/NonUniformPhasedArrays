@@ -5,6 +5,8 @@ import random
 import math
 from copy import deepcopy
 import numpy as np
+from scipy.fftpack import fft, fftfreq
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 import time
@@ -714,11 +716,11 @@ In order for the optimisation program to run we need to be able to "score" each 
 keep it. The following functions deal with the beamforming and gain determination
 Scoring functions:
 """
-def score_array_angles_and_xy_separation(array):
+def score_array_angles_and_separations(array):
     angles_score = score_array_angles(array)
-    xysep_score = score_array_xy_sep(array)
+    sep_score = score_array_seps_mag(array)
 
-    score = (angles_score+xysep_score)/2
+    score = (angles_score+sep_score)/2
 
     return score
 
@@ -767,10 +769,11 @@ def calc_gain(Im):
     gain = max(center_image) / max(outside_image)
     return gain
 
-
+gloabl_score_count = 0
 def score_gain_fast(array):
-    global res
+    global res,gloabl_score_count
     filename = "temp_array.csv"
+    tiny_jiggle_score=0.05
     save_array_to_csv(array, filename)
 
     I = create_image(filename,res)
@@ -778,6 +781,9 @@ def score_gain_fast(array):
     gain = calc_gain(I)
     jiggle_amount = gain * tiny_jiggle_score / 100
     random_deviation = np.random.uniform(low=-jiggle_amount, high=jiggle_amount)
+
+    # Remove this later:
+    gloabl_score_count += 1
 
     return gain + random_deviation
 
@@ -795,8 +801,9 @@ def sidelobe_rejection_function_db(array):
     jiggle_amount = gain * tiny_jiggle_score / 100
     random_deviation = np.random.uniform(low=-jiggle_amount, high=jiggle_amount)
 
-    #score = -1*sidelobe_rejection + random_deviation
-    return sidelobe_rejection,I,gain
+    score = -1*sidelobe_rejection + random_deviation
+    return score
+
 
 def score_directivity(array):
     filename = "temp_array.csv"
@@ -839,7 +846,7 @@ def create_AP(filename):
     return AP
 
 
-def create_planar_surface(width, Z_depth, res):
+def create_planar_surface(width, Z_depth_image_plane, res):
     X = np.linspace(-width/2, width/2, res)
     Y = np.linspace(-width/2, width/2, res)
     X_full = []
@@ -849,7 +856,7 @@ def create_planar_surface(width, Z_depth, res):
         for y in Y:
             X_full.append(x)
             Y_full.append(y)
-            Z_full.append(Z_depth)
+            Z_full.append(Z_depth_image_plane)
 
     PP = []
     for i in range(len(X_full)):
@@ -930,9 +937,6 @@ def create_interference_pattern(D,res):
     image = I.reshape(res, res)
 
     return image
-
-
-
 def create_image_v2(AP,res,Z_depth,width):
 
 
@@ -945,8 +949,8 @@ def create_image_v2(AP,res,Z_depth,width):
     I = create_interference_pattern(D,res)
 
     return I
-
 def create_image(filename,res):
+    global Z_depth
     # Matrix holding the antenna positions
     AP = create_AP(filename)
 
@@ -959,6 +963,180 @@ def create_image(filename,res):
     I = create_interference_pattern(D,res)
 
     return I
+
+
+
+
+
+
+def grab_baselines(AP):
+    i, j = np.triu_indices(AP.shape[0], 1)
+    baselines = np.array(list(zip(AP[i], AP[j])))
+    return baselines
+
+def grab_phase_differences(phases):
+    i, j = np.triu_indices(phases.shape[0], 1)
+    phase_differences = np.abs(phases[i] - phases[j])
+    return phase_differences
+
+def calculate_time_series_complex_data(AP, freq, s_freq, c, source_position, duration, sampling_rate):
+    num_antennas = AP.shape[0]
+    num_samples = int(duration * sampling_rate)
+
+    time_vector = np.arange(0, duration, 1 / sampling_rate)
+
+    antenna_positions = np.reshape(AP, (num_antennas, 1, 3))
+    source_positions = np.reshape(source_position, (1, 3))
+
+    distances = np.linalg.norm(antenna_positions - source_positions, axis=2)
+    time_delays = distances / c
+
+    phase = 2 * np.pi * freq * (np.reshape(time_vector, (1, num_samples)) + time_delays)
+    time_series_complex_data = np.exp(1j * phase) * np.cos(2 * np.pi * s_freq * (np.reshape(time_vector, (1, num_samples)) + time_delays))
+
+    return time_series_complex_data
+
+def extract_phases(signals, main_frequency=10.36e6, delta_nu=0.2e6):
+    fft_signals = fft(signals, axis=1)
+
+    sample_freq = 125e6
+    n_samples = fft_signals.shape[1]
+    freq_bins = fftfreq(n_samples, 1 / sample_freq)
+
+    selected_freq_indices = np.where(
+        (freq_bins >= main_frequency - delta_nu) & (freq_bins <= main_frequency + delta_nu))
+
+    narrow_band_ffts = fft_signals[:, selected_freq_indices]
+    frequencies = freq_bins[selected_freq_indices]
+
+    phases = np.angle(narrow_band_ffts)
+    phases = np.array([phases[i][phases.shape[1] // 2] for i in range(len(phases))])
+
+    return phases % (2 * np.pi)
+
+def calc_phase_difference_uniformity(array):
+    AP = np.array([(array[i][0], array[i][1], 0) for i in range(len(array))])
+
+    Z_depth = 100
+    source_pos = np.array([0, 0, Z_depth])
+
+    c = 3e8
+    freq = 26.014e9
+    s_freq = 9.125e6
+    duration = 10e-6
+    SF = 125e6
+
+    time_series_complex_data = calculate_time_series_complex_data(AP, freq, s_freq, c, source_pos, duration, SF)
+
+    antenna_phases = extract_phases(time_series_complex_data)
+
+    phase_differences = grab_phase_differences(antenna_phases)
+    phase_differences.sort()
+
+    ideal_phase_differences = np.linspace(0, 2*np.pi, len(phase_differences))
+
+    mse = np.mean((phase_differences - ideal_phase_differences) ** 2)
+
+    score = 1 / mse
+
+    return score
+
+
+def capture_virtual_image(array):
+    global freq,res
+    # Create array from AP:
+    AP = np.array([(array[i][0], array[i][1], 0) for i in range(len(array))])/100 - 0.12
+
+    # Create the synthetic data:
+
+    # Define the antenna positions (AP) array and call the function
+    c = 3e8
+    #freq = 26.014e9  # Convert GHz frequency to Hz
+    s_freq = 9.125e6  # 10 MHz down-converted frequency in Hz
+    duration = 20e-6  # Time duration in seconds for the time-series data
+    SF = 125e6
+
+    source_pos = np.array([0, 0, Z_depth])
+
+    # So this array hols the time-series compex data from each antenna element. Shape-((20, 12500) or (num_antennas,res^2))
+    time_series_complex_data = calculate_time_series_complex_data(AP, freq, s_freq, c, source_pos, duration, SF)
+
+    PP, (X, Y, Z) = create_planar_surface(width, Z_depth, res)
+
+    ideal_phase_maps = calculate_phase_map(AP, PP, freq, c) % (2 * np.pi)
+
+    narrow_band_fft_data_test = extract_narrow_band_fft(time_series_complex_data, s_freq)
+
+    image = create_image_from_fft_signals(ideal_phase_maps, narrow_band_fft_data_test, res)
+
+    return image
+
+
+def create_image_from_fft_signals(phase_maps, fft_data, res):
+    image = []
+    phase_maps_unraveled = phase_maps.T.reshape(res ** 2, -1)
+
+    # looping over each pixel
+    for image_pixel_indx, phase_values_for_pixel in tqdm(enumerate(phase_maps_unraveled)):
+
+        phase_shifted_fft_amplitudes = []
+        for ant_indx, phase_offset in enumerate(phase_values_for_pixel):
+            fft_data_antenna = fft_data[ant_indx]
+
+            # Apply the phase shifts:
+            phase_offset_adjusted = (phase_offset)
+            fft_data_antenna_shifted = fft_data_antenna / np.exp(1j * (phase_offset_adjusted))
+
+            # Now we can sum over the antennas
+            phase_shifted_fft_amplitudes.append(fft_data_antenna_shifted)
+        summed_phase_shifted_fft_amplitudes = np.sum(np.array(phase_shifted_fft_amplitudes), axis=0)
+
+        # Square the modulus
+        square_mod = np.abs(summed_phase_shifted_fft_amplitudes) ** 2
+
+        # Integrate/sum over the FFT samples
+        pixel_value = np.sum(square_mod, axis=0)
+        image.append(pixel_value)
+
+    image = np.array(image).reshape(res, res)
+    image /= image.max()
+
+    return image
+
+
+def calculate_phase_map(AP, PP, freq, c):
+    num_antennas = AP.shape[0]
+    num_pixels = PP.shape[0]
+    phase_map = np.zeros((num_antennas, num_pixels))
+
+    for i in range(num_antennas):
+        for j in range(num_pixels):
+            antenna_position = AP[i, :]
+            pixel_position = PP[j, :]
+            distance = np.linalg.norm(pixel_position - antenna_position)
+            time_delay = distance / c
+            phase = 2 * np.pi * freq * time_delay
+            phase_map[i, j] = phase
+
+    return phase_map.reshape(-1,res,res)
+def extract_narrow_band_fft(signals, signal_frequency, delta_nu=0.2e6, SF=125e6):
+    fft_signals = fft(signals)
+    # Calculate the frequency bins
+    n_samples = fft_signals.shape[1]
+    freq_bins = fftfreq(n_samples, 1 / SF)
+
+    # Now lets take a small, narrow freq band for both peaks:
+    selected_freq_indices_upper = np.where(
+        (freq_bins >= signal_frequency - delta_nu) & (freq_bins <= signal_frequency + delta_nu))
+    selected_freq_indices_lower = np.where(
+        ((freq_bins >= -signal_frequency - delta_nu) & (freq_bins <= -signal_frequency + delta_nu)))
+
+    fft_narrow_band_upper = np.array([fft_signals[selected_freq_indices_upper] for fft_signals in fft_signals])
+    fft_narrow_band_lower = np.array([fft_signals[selected_freq_indices_lower] for fft_signals in fft_signals])
+
+    res = np.stack([np.concatenate((fft_narrow_band_upper[i], fft_narrow_band_lower[i])) for i in
+                    range(fft_narrow_band_upper.shape[0])])
+    return res
 
 
 """
@@ -1105,6 +1283,50 @@ def visualise_scores(scores,title):
 
     plt.show()
 
+
+def plot_array_design_only_antennas(array_to_view, dpi):
+    x = np.array([antenna[0] for antenna in array_to_view])
+    y = np.array([antenna[1] for antenna in array_to_view])
+
+    array_df = pd.DataFrame()
+    array_df["x"] = x / 100 - 0.12
+    array_df["y"] = y / 100 - 0.12
+
+    plt.figure(figsize=(10, 10), dpi=dpi)
+    plt.title("Design", fontsize=20)
+
+    # Add a filled circle of radius 0.12 centered at (0,0)
+    outer_circle_filled = plt.Circle((0, 0), 0.12, fill=True, alpha=0.4, color="orange")
+    plt.gca().add_patch(outer_circle_filled)
+
+    # Add an outline for outer circle
+    outer_circle_outline = plt.Circle((0, 0), 0.12, fill=False, color="black")
+    plt.gca().add_patch(outer_circle_outline)
+
+    # Add a filled circle of radius 0.08 centered at (0,0)
+    inner_circle_filled = plt.Circle((0, 0), 0.08, fill=True, alpha=1, color="white")
+    plt.gca().add_patch(inner_circle_filled)
+
+    # Add a filled circle of radius 0.08 centered at (0,0)
+    inner_circle_filled = plt.Circle((0, 0), 0.08, fill=True, alpha=0.3, color="blue")
+    plt.gca().add_patch(inner_circle_filled)
+
+    # Add an outline for inner circle
+    inner_circle_outline = plt.Circle((0, 0), 0.08, fill=False, color="black")
+    plt.gca().add_patch(inner_circle_outline)
+
+    # Set equal aspect such that circle is drawn as a circle
+    plt.gca().set_aspect('equal')
+
+    sns.scatterplot(data=array_df, x="x", y="y", marker="o", color="black", s=200)
+    plt.xlabel("X (m)", fontsize=20)
+    plt.ylabel("Y (m)", fontsize=20)
+
+    plt.xlim(-0.12, 0.12)
+    plt.ylim(-0.12, 0.12)
+    plt.show()
+
+
 """
 Section 10 - User defined parameters: 
 ----------
@@ -1129,23 +1351,61 @@ Below you can see various tolerances have been chosen depending on the component
 # Dimentions are all in cm
 # PCB
 
+def load_physical_params(is_constraints=True):
+    if is_constraints:
+        PCB_width = (5.1 + (5.1) * 0.05)
+        PCB_height = (0.5 + (0.5) * 0.05)  # 5mm
 
-PCB_width = (5.1 + (5.1) * 0.05)
-PCB_height = (0.5 + (0.5) * 0.05)  # 5mm
+        # SMP
+        SMP_width = (2.25 + 0.05 * 2.25)
+        SMP_height = (1.1 + 0.05 * 1.1)  # 11mm
 
-# SMP
-SMP_width = (2.25 + 0.05 * 2.25)
-SMP_height = (1.1 + 0.05 * 1.1)  # 11mm
+        # WithWave Connectors
+        WWC_width = (2.5 + 2.5 * 0.05)
+        WWC_height = (1 + 1 * 0.05)
+        WWC_vertical_offset = 0
 
-# WithWave Connectors
-WWC_width = (2.5 + 2.5 * 0.05)
-WWC_height = (1 + 1 * 0.05)
-WWC_vertical_offset = 0
+        # Antenna radius
+        ant_radius = (0.7 + 0.7 * 0.05)
+    else:
+        PCB_width = 0
+        PCB_height = 0
 
-# Set the global variables
-array_radius = 12  # This is the outer circle governing the PCB boundaries
-inner_array_radius = 8  # This is the inner circle governing the actual antennas' boundaries
-ant_radius = (0.7 + 0.7 * 0.05)
+        # SMP
+        SMP_width = 0
+        SMP_height = 0
+
+        # WithWave Connectors
+        WWC_width = 0
+        WWC_height = 0
+        WWC_vertical_offset = 0
+
+        # Antenna radius
+        ant_radius = 0
+
+    # Set the global variables
+    array_radius = 12  # This is the outer circle governing the PCB boundaries
+    inner_array_radius = 8  # This is the inner circle governing the actual antennas' boundaries
+
+    # Create a dictionary of parameters
+    params = {"PCB_width": PCB_width,
+              "PCB_height": PCB_height,
+              "SMP_width": SMP_width,
+              "SMP_height": SMP_height,
+              "WWC_width": WWC_width,
+              "WWC_height": WWC_height,
+              "WWC_vertical_offset": WWC_vertical_offset,
+              "array_radius": array_radius,
+              "inner_array_radius": inner_array_radius,
+              "ant_radius": ant_radius}
+
+    return params
+
+def load_global_vars(is_constraints=True):
+    params = load_physical_params(is_constraints)
+    globals().update(params)
+
+
 
 """
 
@@ -1196,7 +1456,7 @@ Parameters for the array's beamforming, and interference pattern generation:
 """
 freq = 20e9
 speed = 3e8
-res = 200 # Resolution of the screen
+res = 100 # Resolution of the screen
 width = 1 # 1m
 Z_depth = 1 #  1m
 circle_gain_crop_radius_m = 2*100e-3  # 90mm
