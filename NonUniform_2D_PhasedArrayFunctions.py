@@ -733,7 +733,11 @@ def score_array_seps_mag(array):
     ideal_sep = np.linspace(ant_radius, inner_array_radius, len(pairs))
     error = np.mean((ideal_sep - seps) ** 2)
 
-    return 1 / error
+
+    # We want to scale this score:
+    score = 1 / error
+    score = np.tanh(score / 10000)*100
+    return score
 
 
 def score_array_xy_sep(array):
@@ -748,8 +752,9 @@ def score_array_xy_sep(array):
     errorx = np.mean((ideal_sep - separationsx) ** 2)
     errory = np.mean((ideal_sep - separationsy) ** 2)
     error = (errorx+errory)/2
-
-    return 1/error
+    score = 1/error
+    score = np.tanh(score/10000)
+    return score
 
 def score_array_angles(array):
 
@@ -761,6 +766,11 @@ def score_array_angles(array):
 
     # We want the error to be as low as possible so the score should be 1/error
     score = 1/error
+    score /= len(pairs)
+
+    # Scale them: (these are semi-arbitrary)
+    score = np.tanh(score/10000) *100
+
     return score
 
 def calc_gain(Im):
@@ -996,23 +1006,7 @@ def calculate_time_series_complex_data(AP, freq, s_freq, c, source_position, dur
 
     return time_series_complex_data
 
-def extract_phases(signals, main_frequency=10.36e6, delta_nu=0.2e6):
-    fft_signals = fft(signals, axis=1)
 
-    sample_freq = 125e6
-    n_samples = fft_signals.shape[1]
-    freq_bins = fftfreq(n_samples, 1 / sample_freq)
-
-    selected_freq_indices = np.where(
-        (freq_bins >= main_frequency - delta_nu) & (freq_bins <= main_frequency + delta_nu))
-
-    narrow_band_ffts = fft_signals[:, selected_freq_indices]
-    frequencies = freq_bins[selected_freq_indices]
-
-    phases = np.angle(narrow_band_ffts)
-    phases = np.array([phases[i][phases.shape[1] // 2] for i in range(len(phases))])
-
-    return phases % (2 * np.pi)
 
 def calc_phase_difference_uniformity(array):
     AP = np.array([(array[i][0], array[i][1], 0) for i in range(len(array))])
@@ -1158,7 +1152,6 @@ def display_array(array):
 
     plt.show()
 
-
 def plot_rectangles(rects, color, fill=False):
     # Plotting the rectangles
     for rect in rects:
@@ -1171,23 +1164,20 @@ def plot_rectangles(rects, color, fill=False):
 def extract_phases(signals, main_frequency=10.36e6, delta_nu=0.2e6):
     fft_signals = fft(signals, axis=1)
 
-    # Calculate the frequency bins
     sample_freq = 125e6
     n_samples = fft_signals.shape[1]
     freq_bins = fftfreq(n_samples, 1 / sample_freq)
 
-    # Select a narrow band of frequency around the main frequency
-
     selected_freq_indices = np.where(
         (freq_bins >= main_frequency - delta_nu) & (freq_bins <= main_frequency + delta_nu))
 
-    narrow_band_ffts = np.array([fft_signals[selected_freq_indices] for fft_signals in fft_signals])
+    narrow_band_ffts = fft_signals[:, selected_freq_indices]
     frequencies = freq_bins[selected_freq_indices]
 
-    phases = np.angle(narrow_band_ffts)  # Shape: (9, 27)
+    phases = np.angle(narrow_band_ffts)
     phases = np.array([phases[i][phases.shape[1] // 2] for i in range(len(phases))])
-    return phases
 
+    return phases % (2 * np.pi)
 
 def capture_interference_on_screen(filename, res):
     from matplotlib.lines import Line2D
@@ -1406,24 +1396,7 @@ def load_global_vars(is_constraints=True):
     globals().update(params)
 
 
-
 """
-
-# If you wish to have no constraints:
-ant_radius = 0
-WWC_height = 0
-WWC_width = 0
-WWC_vertical_offset = 0
-
-SMP_height = 0
-SMP_width = 0
-PCB_height = 0
-PCB_width = 0
-# Set the global variables
-array_radius = 12  # This is the outer circle governing the PCB boundaries
-inner_array_radius = 8  # This is the inner circle governing the actual antennas' boundaries
-ant_radius = 0
-
 
 
 
@@ -1434,6 +1407,7 @@ Settings for the optimisation process.
     - You can choose from:
         - score_array_angles_bow
         - score_gain_fast
+        - etc...
 - Choose the number of antennas you wish to create a design with
 - iterations is the number of times the program will loop over the entire array
 - tries_per_ant is the number of times the program will try to move each indivaidual antenna
@@ -1459,12 +1433,12 @@ speed = 3e8
 res = 100 # Resolution of the screen
 width = 1 # 1m
 Z_depth = 1 #  1m
-circle_gain_crop_radius_m = 2*100e-3  # 90mm
+circle_gain_crop_radius_m = 100e-3  # 90mm
 
 
 
 # Ignore these:
-circle_gain_crop_radius = circle_gain_crop_radius_m * (res / (width * 2))  # pixels
+circle_gain_crop_radius = circle_gain_crop_radius_m * (res / (width))  # pixels
 T = 1 / freq
 omega = 2 * np.pi * freq
 k = omega / speed
