@@ -6,7 +6,7 @@ import math
 from copy import deepcopy
 import numpy as np
 from scipy.fftpack import fft, fftfreq
-
+import cv2
 import matplotlib.pyplot as plt
 import seaborn as sns
 import time
@@ -1317,6 +1317,97 @@ def plot_array_design_only_antennas(array_to_view, dpi):
     plt.show()
 
 
+# Function to generate rotated line profiles over the image
+def generate_rotated_line_profiles(image, center, num_lines, line_length, profile_length):
+    profiles = []
+    for i in range(num_lines):
+        # Compute the angle for the current line
+        angle = i * 180 / num_lines
+
+        # Create the rotation matrix around the given center for the computed angle
+        M = cv2.getRotationMatrix2D(center, angle, 1)
+
+        # Create a zeroed image of the same shape as the input image
+        line_image = np.zeros_like(image, dtype=np.float32)
+
+        # Draw a line in the middle of the zeroed image
+        cv2.line(line_image, (center[0] - line_length // 2, center[1]),
+                  (center[0] + line_length // 2, center[1]), 255, 1)
+
+        # Rotate the image containing the line
+        rotated_line = cv2.warpAffine(line_image, M, (image.shape[1], image.shape[0]))
+
+        # Extract the coordinates of the line in the rotated image
+        y_coords, x_coords = np.where(rotated_line > 0)
+
+        # Interpolate the image values at the line coordinates
+        profile = np.interp(np.linspace(0, len(x_coords) - 1, profile_length),
+                            np.arange(len(x_coords)), image[y_coords, x_coords])
+
+        profiles.append(profile)
+
+    # Return all the profiles as a numpy array
+    return np.array(profiles)
+
+# Function to compute the full width at half maximum (FWHM) from the profiles strip
+def find_FWHM_from_strip(strip, z_distance, screen_width):
+    # Calculate the average intensity over the profiles
+    average_intensity = np.mean(strip, axis=0)
+
+    # Compute the half maximum intensity
+    half_max_intensity = np.max(average_intensity) / 2
+
+    # Find the left and right indices where the intensity is above the half maximum
+    left_idx = np.argmax(average_intensity >= half_max_intensity)
+    right_idx = average_intensity.size - np.argmax(average_intensity[::-1] >= half_max_intensity) - 1
+
+    # Compute the FWHM in pixel units
+    FWHM_pixels = right_idx - left_idx
+
+    # Convert the FWHM from pixels to meters
+    pixel_size = screen_width / strip.shape[1]
+    FWHM_m = FWHM_pixels * pixel_size
+
+    # Compute the angular resolution in radians and degrees
+    angular_resolution_rad = (FWHM_m) / z_distance
+    angular_resolution_deg = (angular_resolution_rad * 180) / math.pi
+
+    # Return all the computed values
+    return FWHM_m, angular_resolution_rad, angular_resolution_deg
+
+# Function to compute the beamwidth of the image
+def beamwidth(image, res, num_lines, Z_depth, width):
+    # Find the coordinates of the pixel with the maximum intensity
+    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(image)
+    center = max_loc
+
+    # Define the length of the lines and the number of profiles
+    line_length = res
+    profile_length = res
+
+    # Generate the profiles of the image
+    profiles = generate_rotated_line_profiles(image, center, num_lines, line_length, profile_length)
+
+    # Compute the FWHM and the angular resolution from the profiles
+    FWHM_m, angular_resolution_rad, angular_resolution_deg = find_FWHM_from_strip(profiles, Z_depth, width)
+
+    # Return the FWHM in meters and the angular resolution in degrees
+    return FWHM_m, angular_resolution_deg
+
+
+def purturb_AP(AP, nudge_size=1e-3):
+    # The purpose of this code block is to estimate the uncertainty of a given quantity, by nudging each antenna by a small amount
+    # and seeing how much it alters a certain quantity
+    AP_variant = AP.copy()
+    for i, antenna_pos in enumerate(AP):
+        pos = AP[i]
+
+        # Little nudge
+        x_nudge, y_nudge = np.random.uniform(low=-nudge_size, high=nudge_size), np.random.uniform(low=-nudge_size,
+                                                                                                  high=nudge_size)
+        AP_variant[i] = (pos[0] + x_nudge, pos[1] + y_nudge, pos[2])
+
+    return AP_variant
 """
 Section 10 - User defined parameters: 
 ----------
