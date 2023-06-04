@@ -3,7 +3,7 @@
 ---
 
 #### Overview
-BSc Project in Physics - Stochastic Optimisation of Aperiodic Phased Array Designs with Beamforming Techniques in the SAMI-2 Diagnostic
+BSc Project in Physics - Stochastic Optimisation of Aperiodic Phased Array Designs with Beamforming Techniques in the SAMI-2 Diagnostic.
 
 This repository contains a module called `NonUniform_2D_PhasedArrayFunctions.py` for working with phased antenna arrays along with a jupyter notebook that takes you through examples of how to use various functions from the module. It has a collection of simple, and in some cases limited, performance evaluation functions. This code was created by Matthew Cox from the University of York as part of a Bachelor's project in Physics.
 
