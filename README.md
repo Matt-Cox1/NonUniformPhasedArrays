@@ -1,4 +1,4 @@
-# NonUniformPhasedArrays
+# Aperiodic Phased Arrays
 
 ---
 
